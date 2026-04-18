@@ -1,0 +1,197 @@
+"""Sentiment analyst agent — news headlines + insider trading patterns."""
+from __future__ import annotations
+
+import json
+import logging
+from typing import Any
+
+from langchain_core.messages import HumanMessage
+
+from src.data.models import AnalystSignal, CompanyNews, LLMAnalysisResult, SignalType
+from src.graph.state import AgentState
+from src.llm import call_llm
+
+logger = logging.getLogger(__name__)
+
+AGENT_ID = "sentiment_analyst"
+
+# Keywords for simple sentiment classification
+POSITIVE_KEYWORDS = [
+    "beat", "beats", "exceeded", "surge", "surges", "record", "upgrade",
+    "upgraded", "outperform", "growth", "profit", "gains", "bullish",
+    "strong", "positive", "optimistic", "expansion", "partnership",
+    "innovation", "breakthrough", "approval", "launch", "rally",
+]
+NEGATIVE_KEYWORDS = [
+    "miss", "misses", "missed", "decline", "declines", "downgrade",
+    "downgraded", "underperform", "loss", "losses", "bearish", "weak",
+    "negative", "pessimistic", "layoff", "layoffs", "lawsuit", "recall",
+    "investigation", "fine", "fined", "crash", "plunge", "warning",
+    "debt", "bankruptcy", "fraud", "scandal",
+]
+
+
+def sentiment_agent(state: AgentState) -> dict[str, Any]:
+    """Analyze news sentiment for each ticker.
+
+    Scores news headlines using keyword matching and generates
+    a bullish/bearish/neutral signal based on sentiment balance.
+    """
+    data = state["data"]
+    tickers: list[str] = data.get("tickers", [])
+    news_map: dict[str, list] = data.get("news", {})
+    show_reasoning: bool = state["metadata"].get("show_reasoning", False)
+
+    signals: list[dict] = []
+
+    for ticker in tickers:
+        try:
+            signal = _analyze_ticker(ticker, news_map, metadata=state["metadata"])
+        except Exception as e:
+            logger.warning(f"[{AGENT_ID}] Failed to analyze {ticker}: {e}")
+            signal = AnalystSignal(
+                agent_id=AGENT_ID, ticker=ticker,
+                signal=SignalType.NEUTRAL, confidence=0,
+                reasoning=f"Analysis failed: {e}",
+            )
+
+        signals.append(signal.model_dump(mode="json"))
+
+        if show_reasoning:
+            logger.info(f"[{AGENT_ID}] {ticker}: {signal.signal.value} "
+                        f"(confidence={signal.confidence}) — {signal.reasoning}")
+
+    message = HumanMessage(
+        content=json.dumps({"agent": AGENT_ID, "signals": signals}),
+        name=AGENT_ID,
+    )
+    return {
+        "messages": [message],
+        "data": {"analyst_signals": {AGENT_ID: signals}},
+    }
+
+
+def _analyze_ticker(ticker: str, news_map: dict[str, list], metadata: dict | None = None) -> AnalystSignal:
+    """Run sentiment analysis on a single ticker using prefetched news."""
+    news_raw = news_map.get(ticker, [])
+    news: list[CompanyNews] = [
+        CompanyNews.model_validate(n) if isinstance(n, dict) else n for n in news_raw
+    ]
+
+    if not news:
+        return AnalystSignal(
+            agent_id=AGENT_ID, ticker=ticker,
+            signal=SignalType.NEUTRAL, confidence=10,
+            reasoning="No recent news available.",
+        )
+
+    positive_count = 0
+    negative_count = 0
+    neutral_count = 0
+    reasons: list[str] = []
+
+    for article in news:
+        text = (article.title + " " + (article.description or "")).lower()
+        pos_hits = sum(1 for kw in POSITIVE_KEYWORDS if kw in text)
+        neg_hits = sum(1 for kw in NEGATIVE_KEYWORDS if kw in text)
+
+        if pos_hits > neg_hits:
+            positive_count += 1
+        elif neg_hits > pos_hits:
+            negative_count += 1
+        else:
+            neutral_count += 1
+
+    total = positive_count + negative_count + neutral_count
+    reasons.append(f"{len(news)} articles analyzed: "
+                   f"{positive_count} positive, {negative_count} negative, {neutral_count} neutral")
+
+    # Calculate sentiment score (-1 to +1)
+    if total > 0:
+        sentiment_score = (positive_count - negative_count) / total
+    else:
+        sentiment_score = 0
+
+    # Map to signal
+    if sentiment_score > 0.2:
+        signal = SignalType.BULLISH
+        confidence = min(90, round(50 + sentiment_score * 50))
+        reasons.append(f"Net positive sentiment ({sentiment_score:.2f})")
+    elif sentiment_score < -0.2:
+        signal = SignalType.BEARISH
+        confidence = min(90, round(50 + abs(sentiment_score) * 50))
+        reasons.append(f"Net negative sentiment ({sentiment_score:.2f})")
+    else:
+        signal = SignalType.NEUTRAL
+        confidence = round(30 + (1 - abs(sentiment_score)) * 20)
+        reasons.append(f"Mixed/neutral sentiment ({sentiment_score:.2f})")
+
+    # Adjust confidence based on sample size
+    if len(news) < 5:
+        confidence = max(10, confidence - 20)
+        reasons.append(f"Low sample size ({len(news)} articles), reduced confidence")
+
+    rule_based = AnalystSignal(
+        agent_id=AGENT_ID, ticker=ticker,
+        signal=signal, confidence=confidence,
+        reasoning="; ".join(reasons),
+    )
+
+    if metadata and metadata.get("use_llm") and news:
+        analysis_data = {
+            "article_count": len(news),
+            "positive_count": positive_count,
+            "negative_count": negative_count,
+            "neutral_count": neutral_count,
+            "sentiment_score": sentiment_score,
+            "headlines": [a.title for a in news[:10]],
+        }
+        return _llm_analyze(ticker, analysis_data, rule_based, metadata)
+
+    return rule_based
+
+
+def _llm_analyze(
+    ticker: str,
+    analysis_data: dict,
+    rule_based: AnalystSignal,
+    metadata: dict,
+) -> AnalystSignal:
+    """Use LLM to interpret news headlines and sentiment."""
+    headlines = "\n".join(f"- {h}" for h in analysis_data["headlines"])
+
+    prompt = (
+        f"You are a sentiment analyst evaluating {ticker}.\n\n"
+        f"Recent Headlines:\n{headlines}\n\n"
+        f"Keyword-based analysis: {analysis_data['article_count']} articles — "
+        f"{analysis_data['positive_count']} positive, "
+        f"{analysis_data['negative_count']} negative, "
+        f"{analysis_data['neutral_count']} neutral\n"
+        f"Sentiment score: {analysis_data['sentiment_score']:.2f} "
+        f"(rule-based: {rule_based.signal.value}, {rule_based.confidence}%)\n\n"
+        "Analyze the actual headline content for nuance that keyword matching misses. Consider:\n"
+        "1. Are positive/negative keywords misleading in context?\n"
+        "2. What is the overall narrative — growth story, trouble brewing, or mixed?\n"
+        "3. How significant are the events (earnings vs. minor news)?\n"
+        "4. Sample size: is there enough data to be confident?\n\n"
+        "Provide a trading signal (bullish/bearish/neutral), confidence 0-100, "
+        "and 2-4 sentence reasoning."
+    )
+
+    result = call_llm(
+        prompt=prompt,
+        response_model=LLMAnalysisResult,
+        model_name=metadata.get("model_name", "gpt-4o-mini"),
+        model_provider=metadata.get("model_provider", "openai"),
+        default_factory=lambda: LLMAnalysisResult(
+            signal=rule_based.signal,
+            confidence=rule_based.confidence,
+            reasoning=rule_based.reasoning,
+        ),
+    )
+
+    return AnalystSignal(
+        agent_id=AGENT_ID, ticker=ticker,
+        signal=result.signal, confidence=result.confidence,
+        reasoning=result.reasoning,
+    )

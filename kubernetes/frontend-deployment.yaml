@@ -1,0 +1,35 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: portai-frontend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: portai-frontend
+  template:
+    metadata:
+      labels:
+        app: portai-frontend
+    spec:
+      containers:
+      - name: frontend
+        image: portai-frontend:latest
+        imagePullPolicy: Never
+        env:
+        - name: NEXT_PUBLIC_API_URL
+          value: "http://portai-backend:8000/api/v1"
+        ports:
+        - containerPort: 3000
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: portai-frontend
+spec:
+  type: LoadBalancer
+  ports:
+  - port: 80
+    targetPort: 3000
+  selector:
+    app: portai-frontend

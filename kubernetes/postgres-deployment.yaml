@@ -1,0 +1,54 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: portai-postgres
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: portai-postgres
+  template:
+    metadata:
+      labels:
+        app: portai-postgres
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:15-alpine
+        env:
+        - name: POSTGRES_USER
+          value: "portai_user"
+        - name: POSTGRES_PASSWORD
+          value: "portai_password"
+        - name: POSTGRES_DB
+          value: "portai_db"
+        ports:
+        - containerPort: 5432
+        volumeMounts:
+        - name: pgdata
+          mountPath: /var/lib/postgresql/data
+      volumes:
+      - name: pgdata
+        persistentVolumeClaim:
+          claimName: portai-postgres-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: portai-postgres
+spec:
+  ports:
+  - port: 5432
+  selector:
+    app: portai-postgres
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: portai-postgres-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
