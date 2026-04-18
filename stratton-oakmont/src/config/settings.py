@@ -8,6 +8,10 @@ load_dotenv()
 # --- Market Data ---
 POLYGON_API_KEY: str = os.getenv("POLYGON_API_KEY", "")
 
+# --- News & Macro ---
+NEWS_API_KEY: str = os.getenv("NEWS_API_KEY", "")
+FRED_API_KEY: str = os.getenv("FRED_API_KEY", "")
+
 # --- Broker ---
 QUANTCONNECT_USER_ID: str = os.getenv("QUANTCONNECT_USER_ID", "")
 QUANTCONNECT_API_KEY: str = os.getenv("QUANTCONNECT_API_KEY", "")
@@ -20,8 +24,8 @@ GOOGLE_API_KEY: str = os.getenv("GOOGLE_API_KEY", "")
 DEEPSEEK_API_KEY: str = os.getenv("DEEPSEEK_API_KEY", "")
 
 # --- Defaults ---
-DEFAULT_MODEL_NAME: str = "gpt-4o-mini"
-DEFAULT_MODEL_PROVIDER: str = "openai"
+DEFAULT_MODEL_NAME: str = "llama-3.3-70b-versatile"
+DEFAULT_MODEL_PROVIDER: str = "groq"
 DATA_PROVIDER: str = os.getenv("DATA_PROVIDER", "yfinance").lower()
 
 
