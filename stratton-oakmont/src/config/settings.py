@@ -11,6 +11,7 @@ POLYGON_API_KEY: str = os.getenv("POLYGON_API_KEY", "")
 # --- News & Macro ---
 NEWS_API_KEY: str = os.getenv("NEWS_API_KEY", "")
 FRED_API_KEY: str = os.getenv("FRED_API_KEY", "")
+FINNHUB_API_KEY: str = os.getenv("FINNHUB_API_KEY", "")
 
 # --- Broker ---
 QUANTCONNECT_USER_ID: str = os.getenv("QUANTCONNECT_USER_ID", "")
